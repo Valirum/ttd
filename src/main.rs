@@ -435,7 +435,6 @@ fn main() -> Result<()> {
     let mut data = load_data()?;
     let (offset_hours, can_override, match_threshold, strict_comparison) = load_config()?;
 
-    // Исправлено: клонируем имя сессии, чтобы избежать заимствования
     let current_session_name = data.current_session.clone().unwrap_or_else(|| "default".to_string());
 
     match cli.command {
@@ -491,7 +490,7 @@ fn main() -> Result<()> {
             };
 
             let sess = data.sessions.entry(current_session_name.clone()).or_insert_with(Vec::new);
-            let (exact_match_idx, match_info, _) = find_task(sess, &task_desc, match_threshold, true);
+            let (exact_match_idx, match_info, _) = find_task(sess, &task_desc, match_threshold, tr);
             let exact_description_match = sess.iter().position(|t| t.description == task_desc);
 
             if let Some(idx) = exact_description_match {
