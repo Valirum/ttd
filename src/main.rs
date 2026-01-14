@@ -242,43 +242,40 @@ fn get_status_color(done: bool) -> Color {
     if done { Color::Green } else { Color::Yellow }
 }
 
-fn print_formatted_task(i: usize, task: &Task, max_desc_len: usize, offset_hours: i64) -> Result<()> {
+fn print_formatted_task(i: usize, task: &Task, offset_hours: i64) -> Result<()> {
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
-    write!(stdout, "{:<2} ", i)?;
+    write!(stdout, "  #{:<2}", i)?;
 
     let status_color = get_status_color(task.done);
     let status_text = if task.done { "[DONE]" } else { "[TODO]" };
     let mut status_spec = ColorSpec::new();
     status_spec.set_fg(Some(status_color));
     stdout.set_color(&status_spec)?;
-    write!(stdout, "{:<8}", status_text)?;
+    write!(stdout, "{:<6}", status_text)?;
     stdout.reset()?;
 
     let desc_text = if task.done {
-        format!("\x1b[9m{:<width$}\x1b[0m", task.description, width = max_desc_len)
+        format!("\x1b[9m{0}\x1b[0m", task.description)
     } else {
-        format!("{:<width$}", task.description, width = max_desc_len)
+        format!("{0}", task.description)
     };
 
     let time_str = format_time(&task.time, offset_hours);
     let time_color = get_time_color(&task.time);
+
     let mut time_spec = ColorSpec::new();
     time_spec.set_fg(Some(time_color));
-
-    write!(stdout, "{} | ", desc_text)?;
     stdout.set_color(&time_spec)?;
-    writeln!(stdout, "{}", time_str)?;
+
+    write!(stdout, "{}", time_str)?;
+
+    stdout.reset()?;
+
+    writeln!(stdout, " > {}", desc_text)?;
+
     stdout.reset()?;
 
     Ok(())
-}
-
-fn get_max_description_length(tasks: &[Task]) -> usize {
-    tasks.iter()
-    .map(|t| t.description.len())
-    .max()
-    .unwrap_or(0)
-    .max(12)
 }
 
 fn get_data_path() -> Result<PathBuf> {
@@ -412,10 +409,10 @@ fn find_task(tasks: &[Task], query: &str, threshold: f64, strict: bool) -> (Opti
 }
 
 fn format_time(dt: &Option<DateTime<Utc>>, offset_hours: i64) -> String {
-    dt.map_or("end of times".to_string(), |t| {
+    dt.map_or("[  end of times  ]".to_string(), |t| {
         let offset = TimeDelta::hours(offset_hours);
         let local = t + offset;
-        local.format("%Y-%m-%d %H:%M").to_string()
+        local.format("[%Y-%m-%d %H:%M]").to_string()
     })
 }
 
@@ -439,14 +436,40 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Ss => {
-            let sessions: Vec<_> = data.sessions.keys().cloned().collect();
-            println!("Available sessions: {:?}", sessions);
-            if let Some(curr) = &data.current_session {
-                println!("Current session: {}", curr);
-            } else {
-                println!("No current session (using 'default')");
+            if data.sessions.is_empty() {
+                println!("No sessions available");
+                return Ok(());
             }
-        }
+
+            // Находим максимальную длину имени сессии для выравнивания
+            let max_session_len = data.sessions.keys()
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(0);
+
+            let mut stdout = StandardStream::stdout(ColorChoice::Always);
+
+            // Выводим список сессий
+            for (session_name, tasks) in &data.sessions {
+                let completed = tasks.iter().filter(|t| t.done).count();
+                let total = tasks.len();
+
+                let is_current = Some(session_name.as_str()) == data.current_session.as_deref();
+                let color = if is_current { Color::Green } else { Color::White };
+
+                let status_text = format!(" ({}/{})", completed, total);
+                let marker = if is_current { ">" } else { " " };
+
+                // Выводим сессию с цветовым выделением
+                stdout.set_color(ColorSpec::new().set_fg(Some(color)).set_bold(is_current))?; // Выделяем текущую жирным
+                write!(stdout, "{} {:<width$}", marker, session_name, width = max_session_len)?;
+                stdout.reset()?;
+
+                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+                writeln!(stdout, "{}", status_text)?;
+                stdout.reset()?;
+            }
+        },
         Commands::S { session } => {
             if let Some(session_name) = session {
                 data.sessions.entry(session_name.clone()).or_insert_with(Vec::new);
@@ -656,27 +679,34 @@ fn main() -> Result<()> {
             sort_tasks(sess);
         }
         Commands::L => {
-            println!("Current session: '{}'", current_session_name);
+
+            let color = Color::Green;
 
             let sess_slice = data.sessions.get(&current_session_name).map_or(&[][..], |v| v.as_slice());
+            let completed = sess_slice.iter().filter(|t| t.done).count();
+            let total = sess_slice.len();
+
+            let status_text = format!(" ({}/{})", completed, total);
+            let marker = ">";
+
+            let mut stdout = StandardStream::stdout(ColorChoice::Always);
+
+            // Выводим сессию с цветовым выделением
+            stdout.set_color(ColorSpec::new().set_fg(Some(color)).set_bold(true))?; // Выделяем текущую жирным
+            write!(stdout, "{} {}", marker, &current_session_name)?;
+            stdout.reset()?;
+
+            stdout.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+            writeln!(stdout, "{}", status_text)?;
+            stdout.reset()?;
+
             if sess_slice.is_empty() {
-                println!("No tasks in session '{}'", current_session_name);
+                println!("  (empty)");
                 return Ok(());
             }
 
-            let completed = sess_slice.iter().filter(|t| t.done).count();
-            println!("Completed: {}/{}", completed, sess_slice.len());
-
-            let max_desc_len = get_max_description_length(sess_slice);
-            println!("{:<2} {:<7} {:<width$} | {}",
-                     "№", "STATUS", "DESCRIPTION", "TIME",
-                     width = max_desc_len);
-            println!("{:-<2} {:-<7} {:-<width$} | {:-<16}",
-                     "", "", "", "",
-                     width = max_desc_len);
-
             for (i, t) in sess_slice.iter().enumerate() {
-                print_formatted_task(i, t, max_desc_len, offset_hours)?;
+                print_formatted_task(i, t, offset_hours)?;
             }
         },
         Commands::Ll => {
@@ -685,38 +715,39 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            let max_desc_len_all = data.sessions.values()
-            .flat_map(|tasks| tasks.iter().map(|t| t.description.len()))
-            .max()
-            .unwrap_or(0)
-            .max(5);
+            let mut stdout = StandardStream::stdout(ColorChoice::Always);
 
             for (session_name, tasks) in &data.sessions {
                 let completed = tasks.iter().filter(|t| t.done).count();
-                println!("\n\n---> Session: '{}' {} ({}/{})\n",
-                         session_name,
-                         if Some(session_name) == data.current_session.as_ref() { "[CURRENT]" } else { "" },
-                             completed,
-                         tasks.len());
+                let total = tasks.len();
+
+                let is_current = Some(session_name.as_str()) == data.current_session.as_deref();
+                let color = if is_current { Color::Green } else { Color::White };
+
+                let status_text = format!(" ({}/{})", completed, total);
+                let marker = if is_current { ">" } else { " " };
+
+                // Выводим сессию с цветовым выделением
+                stdout.set_color(ColorSpec::new().set_fg(Some(color)).set_bold(is_current))?; // Выделяем текущую жирным
+                write!(stdout, "{} {}", marker, session_name)?;
+                stdout.reset()?;
+
+                stdout.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+                writeln!(stdout, "{}", status_text)?;
+                stdout.reset()?;
 
                 if tasks.is_empty() {
-                    println!("  (empty)");
+                    println!("    (empty)");
                     continue;
                 }
-
-                println!("  {:<2} {:<7} {:<width$} | {}",
-                         "№", "STATUS", "DESCRIPTION", "TIME",
-                         width = max_desc_len_all);
-                println!("  {:-<2} {:-<7} {:-<width$} | {:-<16}",
-                         "", "", "", "",
-                         width = max_desc_len_all);
 
                 for (i, t) in tasks.iter().enumerate() {
                     let mut stdout = StandardStream::stdout(ColorChoice::Always);
                     write!(stdout, "  ")?;
                     stdout.reset()?;
-                    print_formatted_task(i, t, max_desc_len_all, offset_hours)?;
+                    print_formatted_task(i, t, offset_hours)?;
                 }
+                println!();
             }
         },
     }
