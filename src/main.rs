@@ -54,6 +54,8 @@ enum Commands {
     A { #[arg(num_args(1..), value_hint = ValueHint::CommandString)] parts: Vec<String> },
     #[command(visible_alias = "remove")]
     R { #[arg(num_args(1..), value_hint = ValueHint::CommandString)] parts: Vec<String> },
+    #[command(visible_alias = "remove-session")]
+    Rs { #[arg(num_args(1..), value_hint = ValueHint::CommandString)] parts: Vec<String> },
     #[command(visible_alias = "done")]
     D { #[arg(num_args(1..), value_hint = ValueHint::CommandString)] parts: Vec<String> },
     #[command(visible_alias = "undone")]
@@ -489,7 +491,7 @@ fn main() -> Result<()> {
             };
 
             let sess = data.sessions.entry(current_session_name.clone()).or_insert_with(Vec::new);
-            let (exact_match_idx, match_info, _) = find_task(sess, &task_desc, match_threshold, strict_comparison);
+            let (exact_match_idx, match_info, _) = find_task(sess, &task_desc, match_threshold, true);
             let exact_description_match = sess.iter().position(|t| t.description == task_desc);
 
             if let Some(idx) = exact_description_match {
@@ -536,13 +538,74 @@ fn main() -> Result<()> {
         Commands::R { ref parts } => {
             handle_remove(parts, &mut data, &current_session_name, match_threshold, strict_comparison)?;
         },
+        Commands::Rs { parts } => {
+            let session = &parts[0];
+            if session.is_empty() {
+                println!("Session name cannot be empty");
+                return Ok(());
+            }
+
+            if session == "default" {
+                println!("Cannot remove default session");
+                return Ok(());
+            }
+
+            if !data.sessions.contains_key(session) {
+                println!("Session '{}' not found", session);
+                return Ok(());
+            }
+
+            let tasks = data.sessions.get(session).unwrap();
+            let uncompleted_count = tasks.iter().filter(|t| !t.done).count();
+            let total_count = tasks.len();
+
+            if total_count > 0 {
+                println!("Session '{}' contains {} tasks ({} uncompleted)",
+                         session, total_count, uncompleted_count);
+
+                if uncompleted_count > 0 {
+                    println!("Are you sure you want to delete this session with uncompleted tasks? [y/N]");
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    let input = input.trim().to_lowercase();
+
+                    if input != "y" && input != "yes" {
+                        println!("Session deletion cancelled");
+                        return Ok(());
+                    }
+                } else {
+                    println!("Session contains only completed tasks. Delete anyway? [y/N]");
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    let input = input.trim().to_lowercase();
+
+                    if input != "y" && input != "yes" {
+                        println!("Session deletion cancelled");
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Удаляем сессию
+            data.sessions.remove(session);
+
+            // Если удаляемая сессия была текущей - переключаемся на default
+            if Some(session) == data.current_session.as_ref() {
+                data.current_session = Some("default".to_string());
+                println!("Switched to default session");
+            }
+
+            println!("Session '{}' deleted successfully", session);
+        },
         Commands::D { ref parts } => {
             handle_done(parts, &mut data, &current_session_name, match_threshold, strict_comparison, true)?;
         },
         Commands::Ud { ref parts } => {
             handle_done(parts, &mut data, &current_session_name, match_threshold, strict_comparison, false)?;
         },
-        Commands::T { parts } => {
+        Commands::T { ref parts } => {
             if parts.len() < 1 {
                 println!("Usage: t <index|task_name> [in|at] <time>");
                 return Ok(());
