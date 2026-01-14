@@ -1,4 +1,3 @@
-// README.md
 # TTD - Task Manager
 
 ## Installation
