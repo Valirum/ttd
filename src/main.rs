@@ -26,18 +26,10 @@ struct AppConfig {
 
 #[derive(Parser)]
 #[command(
-name = "ttd",
-version = "1.2",
-about = "Простой текстовый менеджер задач\n\
-\n\
-Управляет задачами в различных сессиях, поддерживает строгий и нестрогий поиск по имени, поиск по индексу, сортировку по времени и
-цветовое форматирование вывода.\n\
-\n\
-Примеры использования:\n\
-ttd a 'поставить чайник' in 2h\n\
-ttd d 0\n\
-ttd s work\n\
-ttd l"
+author,
+version,
+about,
+long_about,
 )]
 struct Cli {
     #[command(subcommand)]
@@ -561,65 +553,71 @@ fn main() -> Result<()> {
             handle_remove(parts, &mut data, &current_session_name, match_threshold, strict_comparison)?;
         },
         Commands::Rs { parts } => {
-            let session = &parts[0];
-            if session.is_empty() {
-                println!("Session name cannot be empty");
+            if parts.is_empty() {
+                println!("Usage: rs <session_name> [...]");
                 return Ok(());
             }
 
-            if session == "default" {
-                println!("Cannot remove default session");
-                return Ok(());
-            }
+            for session in parts {
+                if session.is_empty() {
+                    println!("Session name cannot be empty");
+                    continue;
+                }
 
-            if !data.sessions.contains_key(session) {
-                println!("Session '{}' not found", session);
-                return Ok(());
-            }
+                if session == "default" {
+                    println!("Cannot remove default session");
+                    continue;
+                }
 
-            let tasks = data.sessions.get(session).unwrap();
-            let uncompleted_count = tasks.iter().filter(|t| !t.done).count();
-            let total_count = tasks.len();
+                if !data.sessions.contains_key(&session) {
+                    println!("Session '{}' not found", session);
+                    continue;
+                }
 
-            if total_count > 0 {
-                println!("Session '{}' contains {} tasks ({} uncompleted)",
-                         session, total_count, uncompleted_count);
+                let tasks = data.sessions.get(&session).unwrap();
+                let uncompleted_count = tasks.iter().filter(|t| !t.done).count();
+                let total_count = tasks.len();
 
-                if uncompleted_count > 0 {
-                    println!("Are you sure you want to delete this session with uncompleted tasks? [y/N]");
+                if total_count > 0 {
+                    println!("Session '{}' contains {} tasks ({} uncompleted)",
+                             session, total_count, uncompleted_count);
 
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    let input = input.trim().to_lowercase();
+                    if uncompleted_count > 0 {
+                        println!("Are you sure you want to delete this session with uncompleted tasks? [y/N]");
 
-                    if input != "y" && input != "yes" {
-                        println!("Session deletion cancelled");
-                        return Ok(());
-                    }
-                } else {
-                    println!("Session contains only completed tasks. Delete anyway? [y/N]");
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        let input = input.trim().to_lowercase();
 
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    let input = input.trim().to_lowercase();
+                        if input != "y" && input != "yes" {
+                            println!("Session deletion cancelled for '{}'", session);
+                            continue;
+                        }
+                    } else {
+                        println!("Session contains only completed tasks. Delete anyway? [y/N]");
 
-                    if input != "y" && input != "yes" {
-                        println!("Session deletion cancelled");
-                        return Ok(());
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        let input = input.trim().to_lowercase();
+
+                        if input != "y" && input != "yes" {
+                            println!("Session deletion cancelled for '{}'", session);
+                            continue;
+                        }
                     }
                 }
+
+                // Удаляем сессию
+                data.sessions.remove(&session);
+
+                // Если удаляемая сессия была текущей - переключаемся на default
+                if Some(&session) == data.current_session.as_ref() {
+                    data.current_session = Some("default".to_string());
+                    println!("Switched to default session");
+                }
+
+                println!("Session '{}' deleted successfully", session);
             }
-
-            // Удаляем сессию
-            data.sessions.remove(session);
-
-            // Если удаляемая сессия была текущей - переключаемся на default
-            if Some(session) == data.current_session.as_ref() {
-                data.current_session = Some("default".to_string());
-                println!("Switched to default session");
-            }
-
-            println!("Session '{}' deleted successfully", session);
         },
         Commands::D { ref parts } => {
             handle_done(parts, &mut data, &current_session_name, match_threshold, strict_comparison, true)?;
@@ -758,20 +756,43 @@ fn main() -> Result<()> {
 
 fn handle_remove(parts: &[String], data: &mut Data, current: &str, threshold: f64, strict: bool) -> Result<()> {
     if parts.is_empty() {
-        println!("Usage: r <index|task_name>");
+        println!("Usage: r <index|task_name> [...]");
         return Ok(());
     }
-    let arg = &parts[0];
     let sess = data.sessions.get_mut(current).context("No session")?;
 
-    let (target_idx, match_info, is_index_search) = find_task(sess, arg, threshold, strict);
+    let mut indices_to_remove = Vec::new();
+    let mut not_found = Vec::new();
 
-    if let Some(idx) = target_idx {
-        let desc = sess[idx].description.clone();
-        sess.remove(idx);
-        println!("Removed task #{} '{}'", idx, desc);
-    } else {
-        if !is_index_search {
+    for arg in parts {
+        let (target_idx, match_info, is_index_search) = find_task(sess, arg, threshold, strict);
+        if let Some(idx) = target_idx {
+            indices_to_remove.push(idx);
+        } else {
+            not_found.push((arg.clone(), match_info, is_index_search));
+        }
+    }
+
+    // Удаляем дубликаты и сортируем по убыванию
+    indices_to_remove.sort_unstable();
+    indices_to_remove.dedup(); // Удаление дубликатов
+    indices_to_remove.sort_by(|a, b| b.cmp(a)); // Сортировка по убыванию
+
+    for &idx in &indices_to_remove {
+        if idx < sess.len() {
+            let desc = sess[idx].description.clone();
+            sess.remove(idx);
+            println!("Removed task #{} '{}'", idx, desc);
+        } else {
+            eprintln!("Warning: index {} out of bounds after previous removals", idx);
+        }
+    }
+
+    // Вывод сообщений о ненайденных задачах
+    for (arg, match_info, is_index_search) in not_found {
+        if is_index_search {
+            println!("Index {} not found", arg);
+        } else {
             if let Some((matched_desc, score)) = match_info {
                 if strict {
                     println!("No exact match found for '{}'", arg);
@@ -785,33 +806,42 @@ fn handle_remove(parts: &[String], data: &mut Data, current: &str, threshold: f6
             } else {
                 println!("Task '{}' not found", arg);
             }
-        } else {
-            println!("Index {} not found", arg);
         }
     }
+
+    // Сортировка после удаления не требуется, так как порядок не меняется
     Ok(())
 }
 
 fn handle_done(parts: &[String], data: &mut Data, current: &str, threshold: f64, strict: bool, mark_done: bool) -> Result<()> {
     if parts.is_empty() {
-        println!("Usage: {} <index|task_name>", if mark_done { "d" } else { "ud" });
+        println!("Usage: {} <index|task_name> [...]", if mark_done { "d" } else { "ud" });
         return Ok(());
     }
-    let arg = &parts[0];
     let sess = data.sessions.get_mut(current).context("No session")?;
 
-    let (target_idx, match_info, is_index_search) = find_task(sess, arg, threshold, strict);
+    let mut not_found = Vec::new();
 
-    if let Some(idx) = target_idx {
-        let desc = sess[idx].description.clone();
-        if sess[idx].done != mark_done {
-            sess[idx].done = mark_done;
-            println!("Marked #{} '{}' as {}", idx, desc, if mark_done { "done" } else { "NOT done" });
+    for arg in parts {
+        let (target_idx, match_info, is_index_search) = find_task(sess, arg, threshold, strict);
+
+        if let Some(idx) = target_idx {
+            let desc = sess[idx].description.clone();
+            if sess[idx].done != mark_done {
+                sess[idx].done = mark_done;
+                println!("Marked #{} '{}' as {}", idx, desc, if mark_done { "done" } else { "NOT done" });
+            } else {
+                println!("Task #{} '{}' is already {}", idx, desc, if mark_done { "done" } else { "NOT done" });
+            }
         } else {
-            println!("Task #{} '{}' is already {}", idx, desc, if mark_done { "done" } else { "NOT done" });
+            not_found.push((arg.clone(), match_info, is_index_search));
         }
-    } else {
-        if !is_index_search {
+    }
+
+    for (arg, match_info, is_index_search) in not_found {
+        if is_index_search {
+            println!("Index {} not found", arg);
+        } else {
             if let Some((matched_desc, score)) = match_info {
                 if strict {
                     println!("No exact match found for '{}'", arg);
@@ -825,9 +855,8 @@ fn handle_done(parts: &[String], data: &mut Data, current: &str, threshold: f64,
             } else {
                 println!("Task '{}' not found", arg);
             }
-        } else {
-            println!("Index {} not found", arg);
         }
     }
+
     Ok(())
 }
